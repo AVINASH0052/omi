@@ -9,22 +9,24 @@ breakdowns, which would double-count), and exclude company-driven keys (conv_*, 
 """
 
 import os
-import sys
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
+
+import pytest
 
 os.environ.setdefault(
     "ENCRYPTION_SECRET",
     "omi_ZwB2ZNqB2HHpMK6wStk7sTpavJiPTFg7gXUHnc4tFABPU6pZ2c2DKgehtfgi4RZv",
 )
 
-mock_db = MagicMock()
-_mock_client_module = MagicMock()
-_mock_client_module.db = mock_db
-sys.modules["database._client"] = _mock_client_module
-sys.modules["stripe"] = MagicMock()
-
 from database import user_usage  # noqa: E402
+
+
+@pytest.fixture
+def mock_db(monkeypatch):
+    db = MagicMock(name="db")
+    monkeypatch.setattr(user_usage, "db", db)
+    return db
 
 
 class _Snap:
@@ -45,7 +47,7 @@ class _DocRef:
         return _Snap(self._data)
 
 
-def _setup_docs(docs):
+def _setup_docs(mock_db, docs):
     refs = [_DocRef(k, v) for k, v in docs.items()]
     llm_usage_ref = MagicMock()
     llm_usage_ref.list_documents.return_value = refs
@@ -55,8 +57,9 @@ def _setup_docs(docs):
 NOW = datetime(2026, 6, 23, tzinfo=timezone.utc)
 
 
-def test_counts_nested_desktop_chat_plus_flat_backend_chat():
+def test_counts_nested_desktop_chat_plus_flat_backend_chat(mock_db):
     _setup_docs(
+        mock_db,
         {
             "2026-06-23": {
                 "desktop_chat": {"call_count": 5, "cost_usd": 1.5},  # nested (Rust) — counted
@@ -68,7 +71,7 @@ def test_counts_nested_desktop_chat_plus_flat_backend_chat():
                 "date": "2026-06-23",
             },
             "2026-05-30": {"desktop_chat": {"call_count": 999}},  # other month — excluded
-        }
+        },
     )
     r = user_usage.get_monthly_chat_usage("uid", now=NOW)
     # 5 (grand-total desktop_chat) + 4 (flat chat.*); breakdowns + proactive excluded; other month excluded
@@ -76,20 +79,21 @@ def test_counts_nested_desktop_chat_plus_flat_backend_chat():
     assert r["cost_usd"] == 1.5, r
 
 
-def test_realtime_ptt_included_via_grand_total():
+def test_realtime_ptt_included_via_grand_total(mock_db):
     # A pure-PTT month: only realtime turns. record_llm_usage always bumps the grand-total
     # desktop_chat too, so it must be counted even with zero typed chat.
     _setup_docs(
+        mock_db,
         {
             "2026-06-10": {
                 "desktop_chat": {"call_count": 7, "cost_usd": 0.4},
                 "desktop_chat_realtime": {"call_count": 7},
             }
-        }
+        },
     )
     assert user_usage.get_monthly_chat_usage("uid", now=NOW)["questions"] == 7
 
 
-def test_only_proactive_counts_zero():
-    _setup_docs({"2026-06-23": {"conv_apps.gpt-5.call_count": 100, "memories.gpt-4.call_count": 50}})
+def test_only_proactive_counts_zero(mock_db):
+    _setup_docs(mock_db, {"2026-06-23": {"conv_apps.gpt-5.call_count": 100, "memories.gpt-4.call_count": 50}})
     assert user_usage.get_monthly_chat_usage("uid", now=NOW)["questions"] == 0
