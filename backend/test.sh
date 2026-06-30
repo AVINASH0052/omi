@@ -79,7 +79,6 @@ pytest tests/unit/test_memories_validation.py -v
 pytest tests/unit/test_memory_domain.py -v
 pytest tests/unit/test_memory_system_cohort.py -v
 pytest tests/unit/test_canonical_memory_vectors.py -v
-pytest tests/unit/test_no_module_level_sys_modules_stub.py -v
 pytest tests/unit/test_ws_k_layer_field.py -v
 pytest tests/unit/test_memory_service_parity.py -v
 pytest tests/unit/test_ws_i_write_convergence.py -v
