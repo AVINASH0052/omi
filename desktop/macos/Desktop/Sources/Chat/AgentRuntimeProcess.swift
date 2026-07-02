@@ -609,6 +609,17 @@ actor AgentRuntimeProcess {
     {
       env["OMI_OPENCLAW_ADAPTER_COMMAND"] = Self.openClawAdapterCommand(openClawPath: openClaw)
     }
+
+    if env["OMI_CODEX_ADAPTER_COMMAND"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+      let availability = LocalAgentProviderDetector.availability(
+        for: .codex,
+        environment: env,
+        homeDirectory: home
+      )
+      if case .available(let command) = availability.status {
+        env["OMI_CODEX_ADAPTER_COMMAND"] = command
+      }
+    }
   }
 
   static func openClawAdapterCommand(openClawPath: String, fileManager: FileManager = .default) -> String {

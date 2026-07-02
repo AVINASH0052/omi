@@ -465,17 +465,18 @@ class ChatToolExecutor {
       return "Error: Missing brief. Pass a clear, self-contained task brief."
     }
     let title = (args["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let providerName = ((args["provider"] as? String) ?? "")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-      .replacingOccurrences(of: " ", with: "")
+    let providerName = LocalAgentProviderNormalization.normalizeProviderToken(
+      ((args["provider"] as? String) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    )
     let directedProvider: AgentPillsManager.DirectedProvider?
     switch providerName {
     case "openclaw": directedProvider = .openclaw
     case "hermes": directedProvider = .hermes
+    case "codex": directedProvider = .codex
     case "": directedProvider = nil
     default:
-      return "Error: Unsupported provider '\(providerName)'. Supported providers: openclaw, hermes."
+      return "Error: Unsupported provider '\(providerName)'. Supported providers: openclaw, hermes, codex."
     }
     if let directedProvider {
       let availability = LocalAgentProviderDetector.availability(for: directedProvider)

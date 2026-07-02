@@ -176,11 +176,13 @@ final class AgentPillsManager: ObservableObject {
     enum DirectedProvider: String, Equatable {
         case hermes
         case openclaw
+        case codex
 
         var displayName: String {
             switch self {
             case .hermes: return "Hermes"
             case .openclaw: return "OpenClaw"
+            case .codex: return "Codex"
             }
         }
 
@@ -188,6 +190,7 @@ final class AgentPillsManager: ObservableObject {
             switch self {
             case .hermes: return .hermes
             case .openclaw: return .openclaw
+            case .codex: return .codex
             }
         }
 
@@ -195,6 +198,14 @@ final class AgentPillsManager: ObservableObject {
             switch self {
             case .hermes: return "hermes"
             case .openclaw: return "openclaw"
+            case .codex: return "codex-acp"
+            }
+        }
+
+        var alternateExecutableNames: [String] {
+            switch self {
+            case .codex: return ["codex"]
+            default: return []
             }
         }
 
@@ -202,6 +213,7 @@ final class AgentPillsManager: ObservableObject {
             switch self {
             case .hermes: return "OMI_HERMES_ADAPTER_COMMAND"
             case .openclaw: return "OMI_OPENCLAW_ADAPTER_COMMAND"
+            case .codex: return "OMI_CODEX_ADAPTER_COMMAND"
             }
         }
 
@@ -381,7 +393,7 @@ final class AgentPillsManager: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        let providerPattern = "(open\\s*claw|openclaw|hermes)"
+        let providerPattern = "(open\\s*claw|openclaw|hermes|hermees|hermiss|codex|kodaks|codecs)"
         let patterns = [
             #"(?i)^\s*(?:please\s+)?(?:(?:i\s+)?meant\s+)?(?:ask|tell|ping|message|run|use|try)\s+\#(providerPattern)\b(?:\s+(.*))?$"#,
             #"(?i)^\s*(?:please\s+)?\#(providerPattern)\s*[:,\-]\s*(.*)$"#,
@@ -392,13 +404,14 @@ final class AgentPillsManager: ObservableObject {
             let range = NSRange(trimmed.startIndex..., in: trimmed)
             guard let match = regex.firstMatch(in: trimmed, range: range), match.numberOfRanges >= 2 else { continue }
             guard let providerRange = Range(match.range(at: 1), in: trimmed) else { continue }
-            let providerToken = trimmed[providerRange]
-                .lowercased()
-                .replacingOccurrences(of: " ", with: "")
+            let providerToken = LocalAgentProviderNormalization.normalizeProviderToken(
+                trimmed[providerRange]
+            )
             let provider: DirectedProvider
             switch providerToken {
             case "openclaw": provider = .openclaw
             case "hermes": provider = .hermes
+            case "codex": provider = .codex
             default: continue
             }
 

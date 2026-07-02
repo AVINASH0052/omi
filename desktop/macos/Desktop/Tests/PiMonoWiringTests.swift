@@ -41,7 +41,50 @@ final class PiMonoWiringTests: XCTestCase {
     XCTAssertEqual(AgentRuntimeRouting.adapterId(for: .acp).rawValue, "acp")
     XCTAssertEqual(AgentRuntimeRouting.adapterId(for: .hermes).rawValue, "hermes")
     XCTAssertEqual(AgentRuntimeRouting.adapterId(for: .openclaw).rawValue, "openclaw")
+    XCTAssertEqual(AgentRuntimeRouting.adapterId(for: .codex).rawValue, "codex")
+    XCTAssertEqual(AgentRuntimeRouting.harnessMode(from: "codex"), .codex)
     XCTAssertNil(AgentRuntimeRouting.harnessMode(from: "unknown"))
+  }
+
+  func testNormalizeProviderTokenMapsCommonMishears() {
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("kodaks"), "codex")
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("codecs"), "codex")
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("co dex"), "codex")
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("hermees"), "hermes")
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("her miss"), "hermes")
+    XCTAssertEqual(LocalAgentProviderNormalization.normalizeProviderToken("open claw"), "openclaw")
+  }
+
+  func testLocalAgentProviderDetectorUsesExplicitCodexCommand() {
+    let availability = LocalAgentProviderDetector.availability(
+      for: .codex,
+      environment: ["OMI_CODEX_ADAPTER_COMMAND": " npx -y @zed-industries/codex-acp "],
+      homeDirectory: "/tmp/missing-home")
+
+    XCTAssertTrue(availability.isAvailable)
+    XCTAssertEqual(availability.status, .available(command: "npx -y @zed-industries/codex-acp"))
+  }
+
+  func testLocalAgentProviderDetectorFallsBackToNpxForCodex() throws {
+    let home = FileManager.default.temporaryDirectory
+      .appendingPathComponent("omi-codex-detector-\(UUID().uuidString)", isDirectory: true)
+    let bin = home.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+
+    let node = bin.appendingPathComponent("node")
+    let npx = bin.appendingPathComponent("npx")
+    try "#!/bin/sh\nexit 0\n".write(to: node, atomically: true, encoding: .utf8)
+    try "#!/bin/sh\nexit 0\n".write(to: npx, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: npx.path)
+
+    let availability = LocalAgentProviderDetector.availability(
+      for: .codex,
+      environment: ["PATH": bin.path],
+      homeDirectory: home.path)
+
+    XCTAssertEqual(availability.status, .available(command: "'\(npx.path)' -y @zed-industries/codex-acp"))
   }
 
   func testLocalAgentProviderDetectorUsesExplicitCommand() {
@@ -264,6 +307,22 @@ final class PiMonoWiringTests: XCTestCase {
     XCTAssertEqual(directive?.provider.harnessMode, .hermes)
     XCTAssertEqual(directive?.rewrittenQuery, "summarize your current status")
     XCTAssertEqual(directive?.title, "Hermes")
+  }
+
+  func testProviderDirectiveRoutesCodexToCodexHarness() {
+    let directive = AgentPillsManager.providerDirective(from: "Please ask kodaks to list the files here")
+
+    XCTAssertEqual(directive?.provider, .codex)
+    XCTAssertEqual(directive?.provider.harnessMode, .codex)
+    XCTAssertEqual(directive?.rewrittenQuery, "list the files here")
+    XCTAssertEqual(directive?.title, "Codex")
+  }
+
+  func testProviderDirectiveRoutesAskCodexToCodexHarness() {
+    let directive = AgentPillsManager.providerDirective(from: "use codex to create notes.md")
+
+    XCTAssertEqual(directive?.provider, .codex)
+    XCTAssertEqual(directive?.rewrittenQuery, "create notes.md")
   }
 
   func testProviderDirectiveIgnoresNonProviderQuestions() {

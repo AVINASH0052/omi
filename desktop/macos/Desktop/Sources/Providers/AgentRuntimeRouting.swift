@@ -5,6 +5,7 @@ enum AgentHarnessMode: String {
     case acp = "acp"
     case hermes = "hermes"
     case openclaw = "openclaw"
+    case codex = "codex"
 }
 
 extension Optional where Wrapped == AgentHarnessMode {
@@ -19,6 +20,7 @@ enum AgentAdapterId: String {
     case acp = "acp"
     case hermes = "hermes"
     case openclaw = "openclaw"
+    case codex = "codex"
 }
 
 enum AgentRuntimeRouting {
@@ -45,6 +47,8 @@ enum AgentRuntimeRouting {
             return .hermes
         case AgentHarnessMode.openclaw.rawValue, "openClaw":
             return .openclaw
+        case AgentHarnessMode.codex.rawValue:
+            return .codex
         default:
             return nil
         }
@@ -60,6 +64,26 @@ enum AgentRuntimeRouting {
             return .hermes
         case .openclaw:
             return .openclaw
+        case .codex:
+            return .codex
+        }
+    }
+}
+
+enum LocalAgentProviderNormalization {
+    static func normalizeProviderToken(_ token: String) -> String {
+        let normalized = token
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "")
+        switch normalized {
+        case "codecs", "kodaks", "codex":
+            return "codex"
+        case "hermiss", "hermees", "hermes":
+            return "hermes"
+        case "openclaw":
+            return "openclaw"
+        default:
+            return normalized
         }
     }
 }
@@ -84,6 +108,8 @@ struct LocalAgentProviderAvailability: Equatable {
             return "I don't see Hermes installed. Make sure Hermes is installed first, then try again."
         case .openclaw:
             return "I don't see OpenClaw installed. Make sure OpenClaw is installed first, then try again."
+        case .codex:
+            return "I don't see Codex installed. Make sure Codex is installed first, then try again."
         }
     }
 
@@ -103,10 +129,28 @@ enum LocalAgentProviderDetector {
             return LocalAgentProviderAvailability(provider: provider, status: .available(command: command))
         }
 
+        let searchDirs = adapterActivationSearchDirectories(homeDirectory: homeDirectory)
+
+        if provider == .codex {
+            for name in [provider.executableName] + provider.alternateExecutableNames {
+                if let path = firstExecutable(named: name, in: searchDirs, fileManager: fileManager) {
+                    return LocalAgentProviderAvailability(provider: provider, status: .available(command: path))
+                }
+            }
+            if let npxCommand = codexNpxFallbackCommand(
+                environment: environment,
+                fileManager: fileManager,
+                searchDirectories: searchDirs
+            ) {
+                return LocalAgentProviderAvailability(provider: provider, status: .available(command: npxCommand))
+            }
+            return LocalAgentProviderAvailability(provider: provider, status: .missing)
+        }
+
         if let path = firstExecutable(
             named: provider.executableName,
-            fileManager: fileManager,
-            homeDirectory: homeDirectory
+            in: searchDirs,
+            fileManager: fileManager
         ) {
             return LocalAgentProviderAvailability(provider: provider, status: .available(command: path))
         }
@@ -134,16 +178,42 @@ enum LocalAgentProviderDetector {
 
     private static func firstExecutable(
         named name: String,
-        fileManager: FileManager,
-        homeDirectory: String
+        in directories: [String],
+        fileManager: FileManager
     ) -> String? {
-        for dir in adapterActivationSearchDirectories(homeDirectory: homeDirectory) {
+        for dir in directories {
             let path = (dir as NSString).appendingPathComponent(name)
             if fileManager.isExecutableFile(atPath: path) {
                 return path
             }
         }
         return nil
+    }
+
+    private static func codexNpxFallbackCommand(
+        environment: [String: String],
+        fileManager: FileManager,
+        searchDirectories: [String]
+    ) -> String? {
+        var directories = searchDirectories
+        if let pathValue = environment["PATH"] {
+            for entry in pathValue.split(separator: ":").map(String.init) where !entry.isEmpty {
+                if !directories.contains(entry) {
+                    directories.append(entry)
+                }
+            }
+        }
+        guard firstExecutable(named: "node", in: directories, fileManager: fileManager) != nil else {
+            return nil
+        }
+        guard let npx = firstExecutable(named: "npx", in: directories, fileManager: fileManager) else {
+            return nil
+        }
+        return "\(shellQuote(npx)) -y @zed-industries/codex-acp"
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private static func adapterActivationSearchDirectories(homeDirectory: String) -> [String] {

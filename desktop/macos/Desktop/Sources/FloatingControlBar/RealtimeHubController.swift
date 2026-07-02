@@ -1010,19 +1010,20 @@ final class RealtimeHubController: NSObject, RealtimeHubSessionDelegate, AVSpeec
     case .spawnAgent:
       let brief = arg("brief")
       let title = (arguments["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let providerName = ((arguments["provider"] as? String) ?? "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-        .replacingOccurrences(of: " ", with: "")
+      let providerName = LocalAgentProviderNormalization.normalizeProviderToken(
+        ((arguments["provider"] as? String) ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+      )
       let directedProvider: AgentPillsManager.DirectedProvider?
       switch providerName {
       case "openclaw": directedProvider = .openclaw
       case "hermes": directedProvider = .hermes
+      case "codex": directedProvider = .codex
       case "": directedProvider = nil
       default:
         session?.sendToolResult(
           callId: callId, name: name,
-          output: "Unsupported agent provider '\(providerName)'. Use 'hermes' or 'openclaw'.")
+          output: "Unsupported agent provider '\(providerName)'. Use 'hermes', 'openclaw', or 'codex'.")
         return
       }
       if let directedProvider {

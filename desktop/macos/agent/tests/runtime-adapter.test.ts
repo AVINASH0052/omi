@@ -478,7 +478,7 @@ describe("adapter capability matrix", () => {
     expect(Object.keys(ADAPTER_CAPABILITY_MATRIX).sort()).toEqual(
       [...PRODUCTION_ADAPTER_IDS, ...PLACEHOLDER_ADAPTER_IDS].sort()
     );
-    expect(PRODUCTION_ADAPTER_IDS).toEqual(["acp", "pi-mono", "hermes", "openclaw"]);
+    expect(PRODUCTION_ADAPTER_IDS).toEqual(["acp", "pi-mono", "hermes", "openclaw", "codex"]);
     expect(PLACEHOLDER_ADAPTER_IDS).toEqual(["a2a"]);
 
     expect(ADAPTER_CAPABILITY_MATRIX.acp.expectations).toMatchObject({
@@ -519,6 +519,16 @@ describe("adapter capability matrix", () => {
       modelSwitching: { status: "unsupported" },
       artifactEmission: { status: "unsupported" },
       toolSupport: { status: "unsupported" },
+      restartOrphanSemantics: { status: "required" },
+    });
+    expect(ADAPTER_CAPABILITY_MATRIX.codex.expectations).toMatchObject({
+      nativeResume: { status: "required" },
+      cancellationDispatch: { status: "required" },
+      cancellationAck: { status: "known_limitation", followUpTicket: "TICKET-03-follow-up-cancel-ack" },
+      pinnedWorker: { status: "unsupported" },
+      modelSwitching: { status: "required" },
+      artifactEmission: { status: "unsupported" },
+      toolSupport: { status: "required" },
       restartOrphanSemantics: { status: "required" },
     });
 
@@ -612,6 +622,17 @@ describe("adapter capability matrix", () => {
       supportsModelSwitching: false,
       supportsArtifactEmission: false,
       supportsTools: false,
+      restartBehavior: "native_bindings_survive",
+    });
+    expect(adapterCapabilitiesFor("codex")).toEqual({
+      resumeFidelity: "native",
+      supportsNativeResume: true,
+      supportsCancellation: true,
+      acknowledgesCancellation: false,
+      requiresPinnedWorker: false,
+      supportsModelSwitching: true,
+      supportsArtifactEmission: false,
+      supportsTools: true,
       restartBehavior: "native_bindings_survive",
     });
   });
