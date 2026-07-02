@@ -274,6 +274,7 @@ struct AgentProviderLogoMark: View {
 /// doing right now (Clicky-style), and on completion suggested follow-ups.
 struct AgentPillPopover: View {
     @ObservedObject var pill: AgentPill
+    @ObservedObject var manager: AgentPillsManager
     var isRecording: Bool
     var onDismiss: () -> Void
     var onOpenInChat: () -> Void
@@ -284,7 +285,10 @@ struct AgentPillPopover: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             activityRow
-            if !isFinished {
+            if pill.awaitingInstallConfirmation {
+                installConsentSection
+            }
+            if !isFinished, !pill.awaitingInstallConfirmation {
                 progressBar
             }
             if case .failed(let message) = pill.status {
@@ -398,6 +402,38 @@ struct AgentPillPopover: View {
         if lower.contains("searching") { return "magnifyingglass" }
         if lower.contains("fetching page") || lower.contains("web") { return "globe" }
         return "sparkles"
+    }
+
+    private var installConsentSection: some View {
+        HStack(spacing: 8) {
+            Button {
+                manager.confirmInstall(for: pill.id)
+            } label: {
+                Text("Install")
+                    .scaledFont(size: 11, weight: .semibold)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                manager.declineInstall(for: pill.id)
+            } label: {
+                Text("Not now")
+                    .scaledFont(size: 11, weight: .medium)
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var progressBar: some View {

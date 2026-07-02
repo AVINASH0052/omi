@@ -1042,17 +1042,31 @@ final class RealtimeHubController: NSObject, RealtimeHubSessionDelegate, AVSpeec
       if let directedProvider {
         let availability = LocalAgentProviderDetector.availability(for: directedProvider)
         guard availability.isAvailable else {
-          let setupPrompt = availability.setupPrompt
-          assistantText = setupPrompt
+          let model = ShortcutSettings.shared.selectedModel.isEmpty
+            ? ModelQoS.Claude.defaultSelection : ShortcutSettings.shared.selectedModel
+          let held = AgentInstallCoordinator.HeldAgentRequest(
+            provider: directedProvider,
+            brief: brief,
+            title: (title?.isEmpty == false)
+              ? title
+              : AgentSelector.displayName(for: bridgeHarnessOverride, directedProvider: directedProvider),
+            model: model,
+            fromVoice: false,
+            bridgeHarnessOverride: directedProvider.harnessMode,
+            fallbackChain: fallbackChain
+          )
+          _ = AgentInstallCoordinator.shared.beginOffer(request: held)
+          let prompt = AgentInstallCatalog.consentPrompt(for: directedProvider)
+          assistantText = prompt
           barState?.isVoiceResponseActive = true
           if !audioReceivedThisTurn {
-            speak(directedProvider.setupNeededStatus)
+            speak(prompt)
           }
           suppressAssistantOutputForCurrentTurn = true
-          log("RealtimeHub[\(providerTag)]: tool spawn_agent provider=\(directedProvider.rawValue) unavailable")
+          log("RealtimeHub[\(providerTag)]: tool spawn_agent provider=\(directedProvider.rawValue) awaiting install consent")
           sendToolResultIfCurrent(
             source: source, callId: callId, name: name,
-            output: availability.toolError)
+            output: "Awaiting confirmation to install \(directedProvider.displayName).")
           return
         }
       }

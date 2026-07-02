@@ -208,6 +208,7 @@ struct AgentPillsContainerView: View {
       {
         AgentPillPopover(
           pill: pill,
+          manager: manager,
           isRecording: manager.recordingPillID == pill.id,
           onDismiss: { manager.dismiss(pillID: pill.id) },
           onOpenInChat: { onOpenInChat(pill) },

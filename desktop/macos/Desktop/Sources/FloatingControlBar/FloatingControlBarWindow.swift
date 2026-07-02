@@ -2559,6 +2559,26 @@ class FloatingControlBarManager {
         provider: ChatProvider,
         presentation: QueryPresentation
     ) async {
+        if await AgentInstallCoordinator.shared.tryHandleUserResponse(
+            message,
+            fromVoice: presentation.fromVoice
+        ) {
+            switch presentation {
+            case .visible(let fromVoice):
+                if fromVoice {
+                    barWindow.state.currentQueryFromVoice = false
+                    barWindow.state.isVoiceResponseActive = false
+                } else {
+                    barWindow.state.showingAIConversation = false
+                    barWindow.state.clearVisibleConversation(cancelInFlightWork: false)
+                }
+            case .voiceOnly:
+                barWindow.state.currentQueryFromVoice = false
+                barWindow.state.isVoiceResponseActive = false
+            }
+            return
+        }
+
         let directive = AgentPillsManager.providerDirective(
             from: message,
             contextualPreviousRequest: recentVisibleUserRequest(in: barWindow)
@@ -2589,11 +2609,21 @@ class FloatingControlBarManager {
             routerTracer?.mark("router_classify", metadata: ["route": "agent", "provider": directive.provider.rawValue])
             let availability = LocalAgentProviderDetector.availability(for: directive.provider)
             guard availability.isAvailable else {
-                let assistantText = availability.setupPrompt
+                let held = AgentInstallCoordinator.HeldAgentRequest(
+                    provider: directive.provider,
+                    brief: directive.rewrittenQuery,
+                    title: directive.title,
+                    model: selectedFloatingModel,
+                    fromVoice: presentation.fromVoice,
+                    bridgeHarnessOverride: directive.provider.harnessMode,
+                    fallbackChain: []
+                )
+                _ = AgentInstallCoordinator.shared.beginOffer(request: held)
+                let assistantText = AgentInstallCatalog.consentPrompt(for: directive.provider)
                 let recordedTurn = provider.recordCompletedTurn(
                     userText: message,
                     assistantText: assistantText,
-                    logLabel: "floating-agent-provider-unavailable"
+                    logLabel: "floating-agent-install-offer"
                 )
                 switch presentation {
                 case .visible:
@@ -2605,7 +2635,7 @@ class FloatingControlBarManager {
                 case .voiceOnly:
                     barWindow.state.currentQueryFromVoice = false
                     barWindow.state.isVoiceResponseActive = false
-                    FloatingBarVoicePlaybackService.shared.speakOneShot(directive.provider.setupNeededStatus)
+                    FloatingBarVoicePlaybackService.shared.speakOneShot(assistantText)
                 }
                 return
             }

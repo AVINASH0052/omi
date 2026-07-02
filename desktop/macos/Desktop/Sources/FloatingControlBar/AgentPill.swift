@@ -72,6 +72,9 @@ final class AgentPill: ObservableObject, Identifiable {
     @Published var viewedAt: Date?
     @Published var suggestedFollowUps: [String] = []
     @Published var contentRevision: Int = 0
+    @Published var awaitingInstallConfirmation: Bool = false
+    var resumedAfterInstall: Bool = false
+    var heldProvider: AgentPillsManager.DirectedProvider?
 
     /// Convenience: how long the agent has been running (or ran).
     var elapsed: TimeInterval {
@@ -676,6 +679,111 @@ final class AgentPillsManager: ObservableObject {
     /// `bootChain` so we never race ACP startup; once a pill's bridge is
     /// warmed it sends concurrently with everything else.
     @discardableResult
+    func spawnInstallOffer(
+        request: AgentInstallCoordinator.HeldAgentRequest,
+        consentPrompt: String
+    ) -> AgentPill {
+        let pill = AgentPill(
+            query: request.brief,
+            model: request.model,
+            bridgeHarnessOverride: request.bridgeHarnessOverride,
+            fallbackChain: []
+        )
+        if let title = request.title, !title.isEmpty {
+            pill.title = title
+        }
+        trimForNewPillIfNeeded()
+        pills.append(pill)
+        pill.status = .queued
+        pill.latestActivity = consentPrompt
+        pill.awaitingInstallConfirmation = true
+        pill.heldProvider = request.provider
+        pill.markContentChanged()
+        return pill
+    }
+
+    func pill(id: UUID) -> AgentPill? {
+        pills.first { $0.id == id }
+    }
+
+    func confirmInstall(for pillID: UUID) {
+        AgentInstallCoordinator.shared.confirmInstall(pillID: pillID)
+    }
+
+    func declineInstall(for pillID: UUID) {
+        guard AgentInstallCoordinator.shared.pending?.pillID == pillID else { return }
+        AgentInstallCoordinator.shared.declineInstall()
+    }
+
+    func executeHeldAgent(request: AgentInstallCoordinator.HeldAgentRequest, on pill: AgentPill) async {
+        pill.resumedAfterInstall = true
+        pill.heldProvider = request.provider
+
+        let provider = ChatProvider(
+            bridgeHarnessOverride: request.bridgeHarnessOverride,
+            fallbackChain: request.fallbackChain
+        )
+        if let floating = FloatingControlBarManager.shared.sharedFloatingProvider {
+            provider.workingDirectory = floating.workingDirectory
+            if request.bridgeHarnessOverride == nil {
+                provider.modelOverride = floating.modelOverride
+            }
+        }
+        providersByPill[pill.id] = provider
+
+        let messageCountBefore = provider.messages.count
+        messageCountByPill[pill.id] = messageCountBefore
+        streamsByPill[pill.id] = provider.$messages
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak pill] messages in
+                guard let self, let pill else { return }
+                self.handle(messages: messages, since: messageCountBefore, for: pill)
+            }
+        let surfaceRef = AgentSurfaceReference.floatingPill(pillId: pill.id)
+        projectionStreamsByPill[pill.id] = AgentRuntimeStatusStore.shared.$projectionsBySurface
+            .receive(on: DispatchQueue.main)
+            .sink { [weak pill] projections in
+                guard let pill, let projection = projections[surfaceRef.key] else { return }
+                guard !pill.status.isFinished || projection.status.isTerminal else { return }
+                AgentPillsManager.apply(projection: projection, to: pill)
+            }
+
+        let previousBoot = bootChain
+        let myBoot = Task { [weak provider] in
+            await previousBoot.value
+            await provider?.warmupBridge()
+        }
+        bootChain = myBoot
+
+        pill.status = .starting
+        pill.latestActivity = "Starting agent…"
+        pill.markContentChanged()
+
+        runTasksByPill[pill.id]?.cancel()
+        let runTask = Task { [weak self, weak pill, weak provider] in
+            await myBoot.value
+            guard !Task.isCancelled else { return }
+            guard let self, let pill, let provider else { return }
+            pill.status = .running
+            pill.completedAt = nil
+            pill.suggestedFollowUps = []
+            let finalText = await provider.sendMessage(
+                pill.query,
+                model: Self.modelForSend(pill: pill, provider: provider),
+                systemPromptSuffix: Self.backgroundAgentSystemPromptSuffix,
+                systemPromptStyle: .floating,
+                sessionKey: "agent-\(pill.id.uuidString)",
+                surfaceRef: surfaceRef,
+                legacyClientScope: AgentLegacyClientScope.floatingPill
+            )
+            guard !Task.isCancelled else { return }
+            self.complete(pill: pill, provider: provider, finalText: finalText)
+        }
+        runTasksByPill[pill.id] = runTask
+        await runTask.value
+    }
+
+    @discardableResult
     func spawn(
         query: String,
         model: String,
@@ -1224,6 +1332,22 @@ final class AgentPillsManager: ObservableObject {
             }
         }
         if let errorText = provider.errorMessage, !errorText.isEmpty {
+            if pill.resumedAfterInstall,
+               let heldProvider = pill.heldProvider,
+               AgentInstallCatalog.isLikelyAuthFailure(errorText, provider: heldProvider) {
+                AgentInstallCoordinator.shared.handlePostInstallAuthFailure(
+                    message: errorText,
+                    provider: heldProvider,
+                    pill: pill
+                )
+                Self.ensureFailureMessage(pill.latestActivity, for: pill)
+                pill.markContentChanged()
+                pill.suggestedFollowUps = AgentPillsManager.deriveFollowUps(for: pill)
+                if pill.viewedAt != nil {
+                    scheduleViewedExpiration(for: pill)
+                }
+                return
+            }
             pill.status = .failed(errorText)
             pill.latestActivity = errorText
             pill.completedAt = Date()

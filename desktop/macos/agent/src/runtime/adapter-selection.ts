@@ -127,6 +127,14 @@ function isDirectedSelectableAdapterId(adapterId: SelectableAdapterId): adapterI
   return (DIRECTED_SELECTABLE_ADAPTER_IDS as readonly SelectableAdapterId[]).includes(adapterId);
 }
 
+export function installCommandForDirectedAdapter(adapterId: string): string | null {
+  if (!isDirectedSelectableAdapterId(adapterId as SelectableAdapterId)) {
+    return null;
+  }
+  const command = ADAPTER_PROFILES[adapterId].capabilityTags.installCommand;
+  return command || null;
+}
+
 export function rankAdapters(
   domain: TaskDomain | undefined,
   connected: SelectableAdapterId[],
