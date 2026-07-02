@@ -84,6 +84,8 @@ actor APIClient {
     var headers: [String: String] = [
       "Content-Type": "application/json",
       "X-App-Platform": "macos",
+      "X-App-Version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+      "X-App-Build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
       "X-Device-Id-Hash": ClientDeviceService.shared.deviceIdHash,
       "X-Request-Start-Time": String(Date().timeIntervalSince1970),
       "X-Desktop-Request-ID": UUID().uuidString,
@@ -4117,6 +4119,15 @@ extension APIClient {
     return try await patch("v1/users/assistant-settings", body: settings)
   }
 
+  /// Fetches server-controlled desktop update/banner policy.
+  func getDesktopUpdatePolicy(currentBuild: Int?) async throws -> DesktopUpdatePolicyResponse {
+    var endpoint = "v2/desktop/update-policy?platform=macos"
+    if let currentBuild {
+      endpoint += "&current_build=\(currentBuild)"
+    }
+    return try await get(endpoint, requireAuth: false)
+  }
+
   // MARK: - Knowledge Graph API
 
   /// Get the full knowledge graph (nodes and edges)
@@ -4595,6 +4606,40 @@ struct UserProfileResponse: Codable {
     useCase = try container.decodeIfPresent(String.self, forKey: .useCase)
     job = try container.decodeIfPresent(String.self, forKey: .job)
     company = try container.decodeIfPresent(String.self, forKey: .company)
+  }
+}
+
+// MARK: - Desktop Update Policy Models
+
+struct DesktopUpdatePolicyResponse: Codable, Equatable {
+  enum Severity: String, Codable {
+    case none
+    case banner
+    case required
+  }
+
+  let id: String
+  let active: Bool
+  let severity: Severity
+  let minimumBuildNumber: Int?
+  let latestBuildNumber: Int?
+  let title: String?
+  let message: String?
+  let ctaText: String
+  let downloadURL: String
+  let canDismiss: Bool
+
+  enum CodingKeys: String, CodingKey {
+    case id, active, severity, title, message
+    case minimumBuildNumber = "minimum_build_number"
+    case latestBuildNumber = "latest_build_number"
+    case ctaText = "cta_text"
+    case downloadURL = "download_url"
+    case canDismiss = "can_dismiss"
+  }
+
+  var isRequired: Bool {
+    active && severity == .required
   }
 }
 
