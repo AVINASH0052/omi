@@ -128,10 +128,11 @@ function isDirectedSelectableAdapterId(adapterId: SelectableAdapterId): adapterI
 }
 
 export function installCommandForDirectedAdapter(adapterId: string): string | null {
-  if (!isDirectedSelectableAdapterId(adapterId as SelectableAdapterId)) {
+  const selectable = adapterId as SelectableAdapterId;
+  if (!isDirectedSelectableAdapterId(selectable)) {
     return null;
   }
-  const command = ADAPTER_PROFILES[adapterId].capabilityTags.installCommand;
+  const command = ADAPTER_PROFILES[selectable].capabilityTags.installCommand;
   return command || null;
 }
 
