@@ -169,7 +169,14 @@ final class AgentRuntimeStatusStore: ObservableObject {
     case .toolActivity:
       let name = message.payload["name"] as? String
       let status = message.payload["status"] as? String
-      let text = status == "completed" ? nil : name.map { ChatContentBlock.displayName(for: $0) }
+      let text: String?
+      if status == "completed" {
+        text = nil
+      } else if let name, name.hasPrefix("__omi_status:") {
+        text = String(name.dropFirst("__omi_status:".count))
+      } else {
+        text = name.map { ChatContentBlock.displayName(for: $0) }
+      }
       update(surface: surface, status: .running, statusText: text, terminal: false, payload: message.payload)
     case .toolResultDisplay:
       let name = message.payload["name"] as? String

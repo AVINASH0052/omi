@@ -11,6 +11,12 @@ import type { OutboundMessage } from "../protocol.js";
 import { AdapterRegistry } from "./adapter-registry.js";
 import { generateAgentId } from "./sqlite-store.js";
 import { AdapterRuntimeError, failureFromError, type RuntimeFailure } from "./failures.js";
+import {
+  buildAdapterChain,
+  formatFallbackStatusLine,
+  isMeaningfulAdapterOutput,
+  shouldRerouteAdapter,
+} from "./fallback-policy.js";
 import type {
   AdapterBinding,
   AgentEvent,
@@ -149,6 +155,7 @@ export interface ExecuteAgentRunInput extends KernelSessionResolutionInput {
   systemPrompt?: string;
   mode?: RunMode;
   adapterId?: string;
+  fallbackAdapterIds?: string[];
   cwd?: string;
   model?: string;
   mcpServers?: Record<string, unknown>[];
@@ -487,204 +494,297 @@ export class AgentRuntimeKernel {
     input: ExecuteAgentRunInput,
     accepted: { session: AgentSession; run: AgentRun }
   ): Promise<KernelRunResult> {
-
-    const adapterId = input.adapterId ?? accepted.session.defaultAdapterId;
-    const maxAttempts = Math.max(1, input.maxAttempts ?? 2);
-    let retryReason: string | null = null;
-    let resumeFromAttemptId: string | null = null;
+    const primaryAdapterId = input.adapterId ?? accepted.session.defaultAdapterId;
+    const adapterChain = buildAdapterChain(primaryAdapterId, input.fallbackAdapterIds ?? []);
+    const maxAdapterSlots = adapterChain.length;
+    const triedAdapterIds = new Set<string>();
+    let globalAttemptNo = 0;
     let lastAttempt: RunAttempt | undefined;
+    let lastFailure: RuntimeFailure | undefined;
 
-    for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
-      const attempt = this.createAttempt({
-        runId: accepted.run.runId,
-        attemptNo,
-        adapterId,
-        retryReason,
-        resumeFromAttemptId,
-      });
-      lastAttempt = attempt;
-
-      if (!this.registry.has(adapterId)) {
-        const failure: RuntimeFailure = {
-          code: "adapter_not_registered",
-          source: "runtime",
-          adapterId,
-          retryable: false,
-          userMessage: `Adapter not registered: ${adapterId}`,
-          technicalMessage: `Adapter not registered: ${adapterId}`,
-        };
-        this.failAttemptBeforeExecution(
-          attempt,
-          "adapter_not_registered",
-          failure.userMessage,
-          false,
-          failure
-        );
+    adapterLoop:
+    for (const adapterId of adapterChain) {
+      if (triedAdapterIds.has(adapterId) || triedAdapterIds.size >= maxAdapterSlots) {
         break;
       }
-      const pool = this.registry.get(adapterId);
+      triedAdapterIds.add(adapterId);
 
-      let binding: AdapterBinding;
-      let handle: AdapterBindingHandle;
-      let bindingResolutionProtectedBindingId: string | null = null;
-      try {
-        const resolved = await this.withBindingResolutionLock(accepted.session.sessionId, adapterId, async () => {
-          const existingBinding = this.readActiveBinding(accepted.session.sessionId, adapterId);
-          const bindingQueueKey = existingBinding ? this.handleForExistingBinding(existingBinding) : undefined;
-          return pool.runExclusiveQueued(
-            bindingQueueKey,
-            `${attempt.attemptId}:binding`,
-            async (worker) => {
-              const resolved = await this.resolveBindingForAttempt({
-                input,
-                session: accepted.session,
-                adapter: worker.adapter,
-                attempt,
-                adapterId,
-              });
-              if (worker.adapter.capabilities.requiresPinnedWorker) {
-                if (resolved.replacesBindingId) {
-                  worker.replacePinnedBinding(resolved.replacesBindingId, resolved.handle);
-                } else {
-                  worker.pinBinding(resolved.handle);
-                }
-              }
-              return resolved;
-            },
-            {
-              ...(bindingQueueKey
-                ? {}
-                : {
-                    onIdlePinnedBindingEvicted: (evictedBindingId: string) => {
-                      this.markEvictedBindingStale(evictedBindingId, "pinned_worker_reassigned");
-                    },
-                  }),
-              protectPinnedBindingAfterWork: true,
-            },
-          );
+      const maxAttempts = Math.max(1, input.maxAttempts ?? 2);
+      let retryReason: string | null = null;
+      let resumeFromAttemptId: string | null = null;
+      let meaningfulOutputProduced = false;
+
+      for (let sameAdapterAttemptNo = 1; sameAdapterAttemptNo <= maxAttempts; sameAdapterAttemptNo += 1) {
+        globalAttemptNo += 1;
+        const attempt = this.createAttempt({
+          runId: accepted.run.runId,
+          attemptNo: globalAttemptNo,
+          adapterId,
+          retryReason,
+          resumeFromAttemptId,
         });
-        binding = resolved.binding;
-        handle = resolved.handle;
-        bindingResolutionProtectedBindingId = pool.requiresPinnedWorkers ? (handle.bindingId ?? null) : null;
-      } catch (error) {
-        pool.unprotectPinnedBinding(bindingResolutionProtectedBindingId);
-        if (isStaleBindingError(error)) {
+        lastAttempt = attempt;
+
+        if (!this.registry.has(adapterId)) {
+          const failure: RuntimeFailure = {
+            code: "adapter_not_registered",
+            source: "runtime",
+            adapterId,
+            retryable: false,
+            userMessage: `Adapter not registered: ${adapterId}`,
+            technicalMessage: `Adapter not registered: ${adapterId}`,
+          };
+          lastFailure = failure;
+          this.failAttemptBeforeExecution(
+            attempt,
+            "adapter_not_registered",
+            failure.userMessage,
+            false,
+            failure
+          );
+          break adapterLoop;
+        }
+        const pool = this.registry.get(adapterId);
+
+        let binding: AdapterBinding;
+        let handle: AdapterBindingHandle;
+        let bindingResolutionProtectedBindingId: string | null = null;
+        try {
+          const resolved = await this.withBindingResolutionLock(accepted.session.sessionId, adapterId, async () => {
+            const existingBinding = this.readActiveBinding(accepted.session.sessionId, adapterId);
+            const bindingQueueKey = existingBinding ? this.handleForExistingBinding(existingBinding) : undefined;
+            return pool.runExclusiveQueued(
+              bindingQueueKey,
+              `${attempt.attemptId}:binding`,
+              async (worker) => {
+                const resolved = await this.resolveBindingForAttempt({
+                  input,
+                  session: accepted.session,
+                  adapter: worker.adapter,
+                  attempt,
+                  adapterId,
+                });
+                if (worker.adapter.capabilities.requiresPinnedWorker) {
+                  if (resolved.replacesBindingId) {
+                    worker.replacePinnedBinding(resolved.replacesBindingId, resolved.handle);
+                  } else {
+                    worker.pinBinding(resolved.handle);
+                  }
+                }
+                return resolved;
+              },
+              {
+                ...(bindingQueueKey
+                  ? {}
+                  : {
+                      onIdlePinnedBindingEvicted: (evictedBindingId: string) => {
+                        this.markEvictedBindingStale(evictedBindingId, "pinned_worker_reassigned");
+                      },
+                    }),
+                protectPinnedBindingAfterWork: true,
+              },
+            );
+          });
+          binding = resolved.binding;
+          handle = resolved.handle;
+          bindingResolutionProtectedBindingId = pool.requiresPinnedWorkers ? (handle.bindingId ?? null) : null;
+        } catch (error) {
+          pool.unprotectPinnedBinding(bindingResolutionProtectedBindingId);
+          if (isStaleBindingError(error)) {
+            const failure = failureFromError(error, {
+              code: "stale_binding",
+              source: "adapter_process",
+              adapterId: attempt.adapterId,
+              retryable: sameAdapterAttemptNo < maxAttempts,
+            });
+            lastFailure = failure;
+            if (sameAdapterAttemptNo < maxAttempts) {
+              this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, true, failure);
+              retryReason = "stale_binding";
+              resumeFromAttemptId = attempt.attemptId;
+              continue;
+            }
+            if (this.tryRerouteAfterFailure({
+              accepted,
+              attempt,
+              adapterId,
+              adapterChain,
+              triedAdapterIds,
+              meaningfulOutputProduced,
+              failure,
+              errorCode: "stale_binding",
+            })) {
+              continue adapterLoop;
+            }
+            this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, false, failure);
+            break adapterLoop;
+          }
+          if (await this.tryRecoverAttempt(input, attempt, error, "binding_failed", sameAdapterAttemptNo < maxAttempts)) {
+            retryReason = "recoverable_error";
+            resumeFromAttemptId = attempt.attemptId;
+            continue;
+          }
           const failure = failureFromError(error, {
-            code: "stale_binding",
+            code: "binding_failed",
             source: "adapter_process",
             adapterId: attempt.adapterId,
-            retryable: attemptNo < maxAttempts,
+            retryable: false,
           });
-          this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, attemptNo < maxAttempts, failure);
-          retryReason = "stale_binding";
-          resumeFromAttemptId = attempt.attemptId;
-          continue;
-        }
-        if (await this.tryRecoverAttempt(input, attempt, error, "binding_failed", attemptNo < maxAttempts)) {
-          retryReason = "recoverable_error";
-          resumeFromAttemptId = attempt.attemptId;
-          continue;
-        }
-        const failure = failureFromError(error, {
-          code: "binding_failed",
-          source: "adapter_process",
-          adapterId: attempt.adapterId,
-          retryable: false,
-        });
-        this.failAttemptBeforeExecution(attempt, "binding_failed", failure.userMessage, false, failure);
-        break;
-      }
-
-      const abortController = new AbortController();
-      const protectedPinnedBindingId = pool.requiresPinnedWorkers ? handle.bindingId : null;
-      pool.protectPinnedBinding(protectedPinnedBindingId);
-
-      try {
-        const result = await pool.runExclusiveQueued(handle, attempt.attemptId, async (worker) => {
-          if (this.runStatus(accepted.run.runId) === "cancelling") {
-            throw new Error("cancelled_before_adapter_dispatch");
+          lastFailure = failure;
+          if (this.tryRerouteAfterFailure({
+            accepted,
+            attempt,
+            adapterId,
+            adapterChain,
+            triedAdapterIds,
+            meaningfulOutputProduced,
+            failure,
+            errorCode: "binding_failed",
+          })) {
+            continue adapterLoop;
           }
-          this.activeExecutions.set(accepted.run.runId, {
-            adapter: worker.adapter,
-            abortController,
-            binding: handle,
-            attemptId: attempt.attemptId,
-            sessionId: accepted.session.sessionId,
-          });
-          refreshMcpAttemptContext(mcpServersForBinding(input.mcpServers ?? [], accepted.session.sessionId, adapterId, this.runtimeNodeId), {
-            ownerId: input.ownerId,
-            requestId: accepted.run.requestId,
-            clientId: accepted.run.clientId,
-            protocolVersion: input.metadata?.protocolVersion,
-            sessionId: accepted.session.sessionId,
-            runId: accepted.run.runId,
-            attemptId: attempt.attemptId,
-            adapterSessionId: handle.adapterNativeSessionId,
-            legacyAdapterSessionId: input.legacyAdapterSessionId,
-          });
-          this.markAttemptRunning(attempt, binding);
-          return worker.adapter.executeAttempt(
-            {
+          this.failAttemptBeforeExecution(attempt, "binding_failed", failure.userMessage, false, failure);
+          break adapterLoop;
+        }
+
+        const abortController = new AbortController();
+        const protectedPinnedBindingId = pool.requiresPinnedWorkers ? handle.bindingId : null;
+        pool.protectPinnedBinding(protectedPinnedBindingId);
+
+        try {
+          const result = await pool.runExclusiveQueued(handle, attempt.attemptId, async (worker) => {
+            if (this.runStatus(accepted.run.runId) === "cancelling") {
+              throw new Error("cancelled_before_adapter_dispatch");
+            }
+            this.activeExecutions.set(accepted.run.runId, {
+              adapter: worker.adapter,
+              abortController,
+              binding: handle,
+              attemptId: attempt.attemptId,
               sessionId: accepted.session.sessionId,
+            });
+            refreshMcpAttemptContext(mcpServersForBinding(input.mcpServers ?? [], accepted.session.sessionId, adapterId, this.runtimeNodeId), {
               ownerId: input.ownerId,
               requestId: accepted.run.requestId,
               clientId: accepted.run.clientId,
+              protocolVersion: input.metadata?.protocolVersion,
+              sessionId: accepted.session.sessionId,
               runId: accepted.run.runId,
               attemptId: attempt.attemptId,
-              binding: handle,
-              prompt: input.promptBlocks ?? [{ type: "text", text: input.prompt }],
-              mode: input.mode ?? "ask",
-              model: input.model,
-              tools: input.tools ?? [],
-              metadata: input.metadata,
-            },
-            (event) => this.persistAdapterEvent(accepted.session.sessionId, accepted.run.runId, attempt.attemptId, event),
-            abortController.signal,
-          );
-        });
-        this.activeExecutions.delete(accepted.run.runId);
-        return this.completeAttemptAndRun(accepted.session, accepted.run.runId, attempt, binding, result);
-      } catch (error) {
-        this.activeExecutions.delete(accepted.run.runId);
-        if (isStaleBindingError(error)) {
-          this.markBindingStale(binding, attempt, messageFrom(error));
+              adapterSessionId: handle.adapterNativeSessionId,
+              legacyAdapterSessionId: input.legacyAdapterSessionId,
+            });
+            this.markAttemptRunning(attempt, binding);
+            return worker.adapter.executeAttempt(
+              {
+                sessionId: accepted.session.sessionId,
+                ownerId: input.ownerId,
+                requestId: accepted.run.requestId,
+                clientId: accepted.run.clientId,
+                runId: accepted.run.runId,
+                attemptId: attempt.attemptId,
+                binding: handle,
+                prompt: input.promptBlocks ?? [{ type: "text", text: input.prompt }],
+                mode: input.mode ?? "ask",
+                model: input.model,
+                tools: input.tools ?? [],
+                metadata: input.metadata,
+              },
+              (event) => {
+                if (isMeaningfulAdapterOutput(event)) {
+                  meaningfulOutputProduced = true;
+                }
+                this.persistAdapterEvent(accepted.session.sessionId, accepted.run.runId, attempt.attemptId, event);
+              },
+              abortController.signal,
+            );
+          });
+          this.activeExecutions.delete(accepted.run.runId);
+          return this.completeAttemptAndRun(accepted.session, accepted.run.runId, attempt, binding, result);
+        } catch (error) {
+          this.activeExecutions.delete(accepted.run.runId);
+          if (isStaleBindingError(error)) {
+            this.markBindingStale(binding, attempt, messageFrom(error));
+            const failure = failureFromError(error, {
+              code: "stale_binding",
+              source: "adapter_execution",
+              adapterId: attempt.adapterId,
+              retryable: sameAdapterAttemptNo < maxAttempts,
+            });
+            lastFailure = failure;
+            if (sameAdapterAttemptNo < maxAttempts) {
+              this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, true, failure);
+              retryReason = "stale_binding";
+              resumeFromAttemptId = attempt.attemptId;
+              continue;
+            }
+            if (this.tryRerouteAfterFailure({
+              accepted,
+              attempt,
+              adapterId,
+              adapterChain,
+              triedAdapterIds,
+              meaningfulOutputProduced,
+              failure,
+              errorCode: "stale_binding",
+            })) {
+              continue adapterLoop;
+            }
+            this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, false, failure);
+            break adapterLoop;
+          }
+          if (await this.tryRecoverAttempt(input, attempt, error, "adapter_execution_failed", sameAdapterAttemptNo < maxAttempts)) {
+            retryReason = "recoverable_error";
+            resumeFromAttemptId = attempt.attemptId;
+            continue;
+          }
+          const wasCancelling = this.runStatus(accepted.run.runId) === "cancelling";
+          if (wasCancelling) {
+            this.finishAttemptAndRun({
+              sessionId: accepted.session.sessionId,
+              runId: accepted.run.runId,
+              attemptId: attempt.attemptId,
+              status: "cancelled",
+              finalText: null,
+              errorCode: null,
+              errorMessage: null,
+              failure: null,
+            });
+            break adapterLoop;
+          }
           const failure = failureFromError(error, {
-            code: "stale_binding",
+            code: "adapter_execution_failed",
             source: "adapter_execution",
             adapterId: attempt.adapterId,
-            retryable: attemptNo < maxAttempts,
+            retryable: false,
           });
-          this.failAttemptBeforeExecution(attempt, "stale_binding", failure.userMessage, attemptNo < maxAttempts, failure);
-          retryReason = "stale_binding";
-          resumeFromAttemptId = attempt.attemptId;
-          continue;
+          lastFailure = failure;
+          if (this.tryRerouteAfterFailure({
+            accepted,
+            attempt,
+            adapterId,
+            adapterChain,
+            triedAdapterIds,
+            meaningfulOutputProduced,
+            failure,
+            errorCode: "adapter_execution_failed",
+          })) {
+            continue adapterLoop;
+          }
+          this.finishAttemptAndRun({
+            sessionId: accepted.session.sessionId,
+            runId: accepted.run.runId,
+            attemptId: attempt.attemptId,
+            status: "failed",
+            finalText: null,
+            errorCode: "adapter_execution_failed",
+            errorMessage: failure.userMessage,
+            failure,
+          });
+          break adapterLoop;
+        } finally {
+          pool.unprotectPinnedBinding(protectedPinnedBindingId);
         }
-        if (await this.tryRecoverAttempt(input, attempt, error, "adapter_execution_failed", attemptNo < maxAttempts)) {
-          retryReason = "recoverable_error";
-          resumeFromAttemptId = attempt.attemptId;
-          continue;
-        }
-        const wasCancelling = this.runStatus(accepted.run.runId) === "cancelling";
-        const status: AttemptStatus = wasCancelling ? "cancelled" : "failed";
-        const failure = wasCancelling ? null : failureFromError(error, {
-          code: "adapter_execution_failed",
-          source: "adapter_execution",
-          adapterId: attempt.adapterId,
-          retryable: false,
-        });
-        this.finishAttemptAndRun({
-          sessionId: accepted.session.sessionId,
-          runId: accepted.run.runId,
-          attemptId: attempt.attemptId,
-          status,
-          finalText: null,
-          errorCode: wasCancelling ? null : "adapter_execution_failed",
-          errorMessage: failure?.userMessage ?? null,
-          failure,
-        });
-        break;
-      } finally {
-        pool.unprotectPinnedBinding(protectedPinnedBindingId);
       }
     }
 
@@ -696,8 +796,61 @@ export class AgentRuntimeKernel {
       attempt,
       adapterSessionId: null,
       terminalStatus: finalRun.status === "cancelled" ? "cancelled" : "failed",
-      text: finalRun.finalText ?? "",
+      text: finalRun.finalText ?? lastFailure?.userMessage ?? "",
     };
+  }
+
+  private tryRerouteAfterFailure(input: {
+    accepted: { session: AgentSession; run: AgentRun };
+    attempt: RunAttempt;
+    adapterId: string;
+    adapterChain: readonly string[];
+    triedAdapterIds: Set<string>;
+    meaningfulOutputProduced: boolean;
+    failure: RuntimeFailure;
+    errorCode: string;
+  }): boolean {
+    const decision = shouldRerouteAdapter({
+      failure: input.failure,
+      meaningfulOutputProduced: input.meaningfulOutputProduced,
+      triedAdapterIds: input.triedAdapterIds,
+      adapterChain: input.adapterChain,
+    });
+    if (!decision.reroute || !decision.nextAdapterId) {
+      return false;
+    }
+    this.failAttemptBeforeExecution(
+      input.attempt,
+      input.errorCode,
+      input.failure.userMessage,
+      true,
+      input.failure
+    );
+    this.emitFallbackReroute(
+      input.accepted.session.sessionId,
+      input.accepted.run.runId,
+      input.attempt.attemptId,
+      input.adapterId,
+      decision.nextAdapterId
+    );
+    return true;
+  }
+
+  private emitFallbackReroute(
+    sessionId: string,
+    runId: string,
+    attemptId: string,
+    fromAdapterId: string,
+    toAdapterId: string
+  ): void {
+    const statusText = formatFallbackStatusLine(fromAdapterId, toAdapterId);
+    this.appendEvent({
+      sessionId,
+      runId,
+      attemptId,
+      type: "run.fallback_reroute",
+      payload: { statusText, fromAdapterId, toAdapterId },
+    });
   }
 
   async cancelRun(runId: string, input: { ownerId?: string } = {}): Promise<CancelRunResult> {

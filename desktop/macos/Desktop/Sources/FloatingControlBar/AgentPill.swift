@@ -709,7 +709,10 @@ final class AgentPillsManager: ObservableObject {
 
         pills.append(pill)
 
-        let provider = ChatProvider(bridgeHarnessOverride: bridgeHarnessOverride)
+        let provider = ChatProvider(
+            bridgeHarnessOverride: bridgeHarnessOverride,
+            fallbackChain: fallbackChain
+        )
         let hasBridgeHarnessOverride = bridgeHarnessOverride != nil
         if let floating = FloatingControlBarManager.shared.sharedFloatingProvider {
             provider.workingDirectory = floating.workingDirectory

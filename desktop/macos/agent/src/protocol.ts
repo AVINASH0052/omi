@@ -29,6 +29,7 @@ export interface QueryMessage extends ProtocolEnvelope, CanonicalCorrelation {
   prompt: string;
   systemPrompt: string;
   adapterId?: string;
+  fallbackAdapterIds?: string[];
   surfaceKind?: string;
   externalRefKind?: string;
   externalRefId?: string;

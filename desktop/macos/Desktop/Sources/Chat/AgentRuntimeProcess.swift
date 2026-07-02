@@ -328,6 +328,7 @@ actor AgentRuntimeProcess {
     model: String?,
     resume: String?,
     imageData: Data?,
+    fallbackAdapterIds: [String] = [],
     onTextDelta: @escaping AgentBridge.TextDeltaHandler,
     onToolCall: @escaping AgentBridge.ToolCallHandler,
     onToolActivity: @escaping AgentBridge.ToolActivityHandler,
@@ -413,6 +414,9 @@ actor AgentRuntimeProcess {
       }
       if let ownerId = currentOwnerId() {
         queryDict["ownerId"] = ownerId
+      }
+      if !fallbackAdapterIds.isEmpty {
+        queryDict["fallbackAdapterIds"] = fallbackAdapterIds
       }
       sendJson(queryDict)
     }

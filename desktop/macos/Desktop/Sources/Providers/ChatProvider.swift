@@ -863,6 +863,7 @@ BROWSER TABS: when you use the browser (Playwright), on your FIRST browser actio
     /// This lets a single pill run Hermes/OpenClaw without changing the user's
     /// global chat provider preference stored in `chatBridgeMode`.
     private let bridgeHarnessOverride: AgentHarnessMode?
+    private let fallbackAdapterIds: [String]
 
     var hasBridgeHarnessOverride: Bool {
         bridgeHarnessOverride != nil
@@ -1054,8 +1055,11 @@ BROWSER TABS: when you use the browser (Playwright), on your FIRST browser actio
     // MARK: - System Prompt
     // Prompts are defined in ChatPrompts.swift (converted from Python backend)
 
-    init(bridgeHarnessOverride: AgentHarnessMode? = nil) {
+    init(bridgeHarnessOverride: AgentHarnessMode? = nil, fallbackChain: [AgentHarnessMode] = []) {
         self.bridgeHarnessOverride = bridgeHarnessOverride
+        self.fallbackAdapterIds = fallbackChain.compactMap {
+            AgentRuntimeProcess.adapterId(forHarnessMode: $0.rawValue)
+        }
         log("ChatProvider initialized, will start Claude bridge on first use")
 
         // When the last in-flight save completes, re-run any poll cycle
@@ -3593,6 +3597,7 @@ BROWSER TABS: when you use the browser (Playwright), on your FIRST browser actio
                 model: effectiveRequestModel,
                 resume: resume,
                 imageData: effectiveImageData,
+                fallbackAdapterIds: fallbackAdapterIds,
                 onTextDelta: textDeltaHandler,
                 onToolCall: toolCallHandler,
                 onToolActivity: toolActivityHandler,

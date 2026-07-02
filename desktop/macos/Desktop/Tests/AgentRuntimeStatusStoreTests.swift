@@ -134,6 +134,20 @@ final class AgentRuntimeStatusStoreTests: XCTestCase {
     XCTAssertNotNil(projection?.completedAt)
   }
 
+  func testToolActivityPassesThroughOmiStatusPrefix() {
+    let store = AgentRuntimeStatusStore()
+    let surface = AgentSurfaceReference.floatingPill(pillId: UUID())
+    let message = AgentRuntimeProcess.RuntimeMessage.parse(
+      #"{"type":"tool_activity","protocolVersion":2,"requestId":"req","name":"__omi_status:Codex unavailable, trying Claude Code","status":"started"}"#
+    )!
+
+    store.ingest(message: message, surface: surface)
+
+    let projection = store.projection(for: surface)
+    XCTAssertEqual(projection?.status, .running)
+    XCTAssertEqual(projection?.statusText, "Codex unavailable, trying Claude Code")
+  }
+
   func testToolResultDisplayDoesNotSurfaceRawOutput() {
     let store = AgentRuntimeStatusStore()
     let surface = AgentSurfaceReference.floatingPill(pillId: UUID())

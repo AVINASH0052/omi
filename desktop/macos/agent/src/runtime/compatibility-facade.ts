@@ -460,6 +460,7 @@ export class JsonlCompatibilityFacade {
       legacySessionKey,
       defaultAdapterId: requestedAdapterId,
       adapterId: requestedAdapterId,
+      fallbackAdapterIds: message.fallbackAdapterIds,
       clientId,
       requestId,
       prompt: message.prompt,
@@ -576,6 +577,23 @@ export class JsonlCompatibilityFacade {
       if (this.latestRunByOwner.get(context.ownerId) === event.runId) {
         this.latestRunByOwner.delete(context.ownerId);
       }
+    }
+    if (event.type === "run.fallback_reroute") {
+      const statusText = typeof payload.statusText === "string" ? payload.statusText : undefined;
+      if (statusText) {
+        this.send(this.withCorrelation({
+          type: "tool_activity",
+          name: `__omi_status:${statusText}`,
+          status: "started",
+        } as OutboundMessage & QueryScopedOutbound, {
+          ...context,
+          eventId: event.eventId,
+          sessionId: event.sessionId,
+          runId: event.runId,
+          attemptId: event.attemptId ?? context.attemptId,
+        }));
+      }
+      return;
     }
     if (!isAdapterPayloadEvent(event.type)) return;
 
