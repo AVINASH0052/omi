@@ -420,7 +420,7 @@ final class AgentPillsManager: ObservableObject {
             guard let match = regex.firstMatch(in: trimmed, range: range), match.numberOfRanges >= 2 else { continue }
             guard let providerRange = Range(match.range(at: 1), in: trimmed) else { continue }
             let providerToken = LocalAgentProviderNormalization.normalizeProviderToken(
-                trimmed[providerRange]
+                String(trimmed[providerRange])
             )
             let provider: DirectedProvider
             switch providerToken {
@@ -711,7 +711,7 @@ final class AgentPillsManager: ObservableObject {
     }
 
     func declineInstall(for pillID: UUID) {
-        guard AgentInstallCoordinator.shared.pending?.pillID == pillID else { return }
+        guard AgentInstallCoordinator.shared.pendingPillID == pillID else { return }
         AgentInstallCoordinator.shared.declineInstall()
     }
 

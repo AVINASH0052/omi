@@ -1,5 +1,5 @@
 import XCTest
-@testable import Omi
+@testable import Omi_Computer
 
 final class AgentInstallCatalogTests: XCTestCase {
   func testInstallCommandAllowlist() {

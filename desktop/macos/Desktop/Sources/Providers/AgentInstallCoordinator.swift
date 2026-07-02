@@ -19,8 +19,10 @@ final class AgentInstallCoordinator {
     let pillID: UUID
   }
 
-  private(set) var pending: PendingOffer?
+  private var pending: PendingOffer?
   private var installTask: Task<Void, Never>?
+
+  var pendingPillID: UUID? { pending?.pillID }
 
   private init() {}
 
