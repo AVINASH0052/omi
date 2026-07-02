@@ -1,10 +1,11 @@
-#
-#
-#
-# .coordination/test-isolation/PLAN.md proceeds. Its only permitted change is to
 # Deprecated legacy allowlist for module-scope sys.modules mutation in backend tests.
-# SHRINK (entries removed as files are migrated to monkeypatch/Depends). Growing
-# Terminal state: this file is deleted (PLAN.md §4, condition #1).
-# This list exists ONLY as a transitional bridge while the migration in
-# it is blocked by the pre-push hook and CI (see DECISIONS.md D4).
-# Total: 0 entries.
+# Transitional bridge only (.coordination/test-isolation/PLAN.md). SHRINK only.
+# The 6 entries below were reintroduced/added by the origin/main merge (main's
+# versions of these files differ from this branch's migration). Re-migrate them next.
+# Total: 6 entries.
+backend/tests/unit/test_async_webhooks.py
+backend/tests/unit/test_delete_account_purge_storage.py
+backend/tests/unit/test_llm_usage_db.py
+backend/tests/unit/test_mcp_api_key_auth_context.py
+backend/tests/unit/test_memory_ledger.py
+backend/tests/unit/test_vector_repair_outbox_worker.py
