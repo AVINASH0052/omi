@@ -37,16 +37,19 @@ final class HubSystemInstructionTests: XCTestCase {
         let properties = parameters?["properties"] as? [String: Any]
         let provider = properties?["provider"] as? [String: Any]
 
-        XCTAssertEqual(provider?["enum"] as? [String], ["openclaw"])
+        XCTAssertEqual(provider?["enum"] as? [String], ["auto", "openclaw"])
+        XCTAssertNotNil(properties?["task_domain"])
     }
 
-    func testRealtimeSpawnAgentOmitsProviderWhenNoLocalProvidersAreAvailable() {
+    func testRealtimeSpawnAgentAlwaysAdvertisesAutoProvider() {
         let tools = RealtimeHubTools.openAITools(availableDirectedProviders: [])
         let spawnAgent = tools.first { ($0["name"] as? String) == HubTool.spawnAgent.rawValue }
         let parameters = spawnAgent?["parameters"] as? [String: Any]
         let properties = parameters?["properties"] as? [String: Any]
+        let provider = properties?["provider"] as? [String: Any]
 
-        XCTAssertNil(properties?["provider"])
+        XCTAssertEqual(provider?["enum"] as? [String], ["auto"])
+        XCTAssertNotNil(properties?["task_domain"])
         XCTAssertNotNil(properties?["brief"])
     }
 

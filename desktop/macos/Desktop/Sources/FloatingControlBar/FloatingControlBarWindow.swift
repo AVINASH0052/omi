@@ -2690,12 +2690,18 @@ class FloatingControlBarManager {
         let decision = await AgentPillsManager.classify(message)
         routerTracer?.end("router_classify", metadata: ["route": decision.route == .agent ? "agent" : "chat"])
         if decision.route == .agent {
+            let selection = AgentSelector.select(
+                taskDomain: decision.taskDomain,
+                briefLength: message.count
+            )
             let pill = AgentPillsManager.shared.spawnFromUserQuery(
                 message,
                 model: selectedFloatingModel,
                 fromVoice: presentation.fromVoice,
                 preFetchedTitle: decision.title,
-                preFetchedAck: decision.ack
+                preFetchedAck: decision.ack,
+                bridgeHarnessOverride: selection.primaryHarness,
+                fallbackChain: selection.fallbackChain
             )
             let title = decision.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             let titleSuffix = (title?.isEmpty == false) ? " titled \"\(title!)\"" : ""

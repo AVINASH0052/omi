@@ -76,7 +76,7 @@ enum RealtimeHubTools {
     let unavailable = availability.filter { !$0.isAvailable }
 
     if unavailable.isEmpty {
-      return "If the user asks to use/ask OpenClaw, Hermes, or Codex, call spawn_agent with provider set to \"openclaw\", \"hermes\", or \"codex\". Treat those as available local providers, not as sessions to inspect."
+      return "If the user asks to use/ask OpenClaw, Hermes, or Codex, call spawn_agent with provider set to \"openclaw\", \"hermes\", or \"codex\". When no agent is named, call spawn_agent with provider set to \"auto\" and include task_domain. Treat those as available local providers, not as sessions to inspect."
     }
 
     var parts: [String] = []
@@ -238,12 +238,24 @@ enum RealtimeHubTools {
   }
 
   static func openAITools(availableDirectedProviders: [String]) -> [[String: Any]] {
-    let providerProperty: [String: Any]? = availableDirectedProviders.isEmpty ? nil : [
+    var providerValues = ["auto"]
+    providerValues.append(contentsOf: availableDirectedProviders.filter { $0 != "auto" })
+    let providerProperty: [String: Any] = [
       "type": "string",
-      "enum": availableDirectedProviders,
-      "description": "Optional available local provider to run this background agent through.",
+      "enum": providerValues,
+      "description":
+        "Agent provider. Use auto when the user did not name an agent so Omi can pick the best fit.",
     ]
     return baseOpenAITools(providerProperty: providerProperty)
+  }
+
+  private static func taskDomainProperty() -> [String: Any] {
+    [
+      "type": "string",
+      "enum": AgentTaskDomain.allCases.map(\.rawValue),
+      "description":
+        "Optional task domain for auto provider selection, e.g. browser for web tasks or repo_ops for git work.",
+    ]
   }
 
   private static func baseOpenAITools(providerProperty: [String: Any]?) -> [[String: Any]] {
@@ -257,6 +269,7 @@ enum RealtimeHubTools {
           "A short Title Case label for the task pill (≤ ~5 words, no trailing "
           + "punctuation), e.g. 'Draft Launch Email'.",
       ],
+      "task_domain": taskDomainProperty(),
     ]
     if let providerProperty {
       spawnAgentProperties["provider"] = providerProperty

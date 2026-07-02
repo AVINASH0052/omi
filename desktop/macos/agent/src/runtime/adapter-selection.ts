@@ -15,13 +15,38 @@ export const ADAPTER_ACTIVATION_ENV = {
 
 export type SelectableAdapterId = keyof typeof ADAPTER_ACTIVATION_ENV;
 
+export type TaskDomain =
+  | "coding"
+  | "repo_ops"
+  | "browser"
+  | "messaging"
+  | "files"
+  | "research"
+  | "system";
+
+export type AdapterSpeedTier = "fast" | "standard";
+
+export interface AdapterCapabilityTags {
+  strengths: TaskDomain[];
+  speedTier: AdapterSpeedTier;
+  requiresAuth: string;
+  installCommand: string;
+  installCheckBinary: string;
+}
+
 export interface AdapterProfile {
   adapterId: ProductionAdapterId;
   activationEnv?: string;
   maxWorkers: number;
   capabilities: AdapterCapabilities;
+  capabilityTags: AdapterCapabilityTags;
   createAdapter: (options: { log: (message: string) => void }) => RuntimeAdapter;
 }
+
+export const DIRECTED_SELECTABLE_ADAPTER_IDS = ["acp", "codex", "openclaw", "hermes"] as const;
+export type DirectedSelectableAdapterId = typeof DIRECTED_SELECTABLE_ADAPTER_IDS[number];
+
+const DIRECTED_SELECTABLE_INSERTION_ORDER: readonly DirectedSelectableAdapterId[] = DIRECTED_SELECTABLE_ADAPTER_IDS;
 
 export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
   acp: {
@@ -29,6 +54,13 @@ export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
     activationEnv: ADAPTER_ACTIVATION_ENV.acp,
     maxWorkers: 1,
     capabilities: adapterCapabilitiesFor("acp"),
+    capabilityTags: {
+      strengths: ["coding", "repo_ops", "files", "research"],
+      speedTier: "standard",
+      requiresAuth: "Claude Code sign in",
+      installCommand: "",
+      installCheckBinary: "claude",
+    },
     createAdapter: () => new AcpRuntimeAdapter(),
   },
   "pi-mono": {
@@ -36,6 +68,13 @@ export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
     activationEnv: ADAPTER_ACTIVATION_ENV["pi-mono"],
     maxWorkers: 1,
     capabilities: adapterCapabilitiesFor("pi-mono"),
+    capabilityTags: {
+      strengths: [],
+      speedTier: "standard",
+      requiresAuth: "Omi sign in",
+      installCommand: "",
+      installCheckBinary: "",
+    },
     createAdapter: () => {
       throw new Error("pi-mono adapter requires authenticated PiMonoAdapter construction");
     },
@@ -45,6 +84,13 @@ export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
     activationEnv: ADAPTER_ACTIVATION_ENV.hermes,
     maxWorkers: 1,
     capabilities: adapterCapabilitiesFor("hermes"),
+    capabilityTags: {
+      strengths: ["coding", "system", "research"],
+      speedTier: "fast",
+      requiresAuth: "model API key via hermes setup",
+      installCommand: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+      installCheckBinary: "hermes",
+    },
     createAdapter: ({ log }) => new HermesRuntimeAdapter({ log }),
   },
   openclaw: {
@@ -52,6 +98,13 @@ export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
     activationEnv: ADAPTER_ACTIVATION_ENV.openclaw,
     maxWorkers: 1,
     capabilities: adapterCapabilitiesFor("openclaw"),
+    capabilityTags: {
+      strengths: ["browser", "messaging", "system", "research"],
+      speedTier: "standard",
+      requiresAuth: "model API key via openclaw onboard",
+      installCommand: "npm install -g openclaw@latest",
+      installCheckBinary: "openclaw",
+    },
     createAdapter: ({ log }) => new OpenClawRuntimeAdapter({ log }),
   },
   codex: {
@@ -59,9 +112,58 @@ export const ADAPTER_PROFILES: Record<ProductionAdapterId, AdapterProfile> = {
     activationEnv: ADAPTER_ACTIVATION_ENV.codex,
     maxWorkers: 1,
     capabilities: adapterCapabilitiesFor("codex"),
+    capabilityTags: {
+      strengths: ["coding", "repo_ops"],
+      speedTier: "standard",
+      requiresAuth: "ChatGPT sign in or OpenAI API key",
+      installCommand: "npm install -g @zed-industries/codex-acp",
+      installCheckBinary: "codex-acp",
+    },
     createAdapter: ({ log }) => new CodexRuntimeAdapter({ log }),
   },
 };
+
+function isDirectedSelectableAdapterId(adapterId: SelectableAdapterId): adapterId is DirectedSelectableAdapterId {
+  return (DIRECTED_SELECTABLE_ADAPTER_IDS as readonly SelectableAdapterId[]).includes(adapterId);
+}
+
+export function rankAdapters(
+  domain: TaskDomain | undefined,
+  connected: SelectableAdapterId[],
+  briefLength: number
+): DirectedSelectableAdapterId[] {
+  const candidates = connected.filter(isDirectedSelectableAdapterId);
+  const scored = candidates.map((adapterId) => {
+    const tags = ADAPTER_PROFILES[adapterId].capabilityTags;
+    let score = 0;
+    if (domain && tags.strengths.includes(domain)) {
+      score += 2;
+    }
+    if (tags.speedTier === "fast" && briefLength < 200) {
+      score += 1;
+    }
+    return {
+      adapterId,
+      score,
+      order: DIRECTED_SELECTABLE_INSERTION_ORDER.indexOf(adapterId),
+    };
+  });
+
+  scored.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    if (left.adapterId === "acp" && right.adapterId !== "acp") {
+      return -1;
+    }
+    if (right.adapterId === "acp" && left.adapterId !== "acp") {
+      return 1;
+    }
+    return left.order - right.order;
+  });
+
+  return scored.map((entry) => entry.adapterId);
+}
 
 export function adapterIdForHarnessMode(harnessMode: string | undefined): SelectableAdapterId {
   if (harnessMode === undefined) return "acp";

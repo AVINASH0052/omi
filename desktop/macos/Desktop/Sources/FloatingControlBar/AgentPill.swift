@@ -60,6 +60,7 @@ final class AgentPill: ObservableObject, Identifiable {
     let createdAt: Date
     let model: String
     let bridgeHarnessOverride: AgentHarnessMode?
+    let fallbackChain: [AgentHarnessMode]
 
     @Published var title: String
     @Published var status: Status = .queued
@@ -77,10 +78,16 @@ final class AgentPill: ObservableObject, Identifiable {
         (completedAt ?? Date()).timeIntervalSince(createdAt)
     }
 
-    init(query: String, model: String, bridgeHarnessOverride: AgentHarnessMode? = nil) {
+    init(
+        query: String,
+        model: String,
+        bridgeHarnessOverride: AgentHarnessMode? = nil,
+        fallbackChain: [AgentHarnessMode] = []
+    ) {
         self.query = query
         self.model = model
         self.bridgeHarnessOverride = bridgeHarnessOverride
+        self.fallbackChain = fallbackChain
         self.title = AgentPill.deriveTitle(from: query)
         self.createdAt = Date()
     }
@@ -171,9 +178,10 @@ final class AgentPillsManager: ObservableObject {
         let route: Route
         let title: String?
         let ack: String?
+        let taskDomain: AgentTaskDomain?
     }
 
-    enum DirectedProvider: String, Equatable {
+    enum DirectedProvider: String, Equatable, CaseIterable {
         case hermes
         case openclaw
         case codex
@@ -245,7 +253,7 @@ final class AgentPillsManager: ObservableObject {
     /// ~300-500ms via the desktop-backend's OpenAI-compatible proxy.
     static func classify(_ query: String) async -> RouterDecision {
         guard let result = await runRouterCall(for: query) else {
-            return RouterDecision(route: .chat, title: nil, ack: nil)
+            return RouterDecision(route: .chat, title: nil, ack: nil, taskDomain: nil)
         }
         return result
     }
@@ -278,7 +286,9 @@ final class AgentPillsManager: ObservableObject {
         Decide whether to (a) answer it inline in the chat bar, or (b) spawn a background agent that will do work on the user's computer/apps/browser.
 
         Reply with ONLY a single-line JSON object, no prose, no markdown:
-        {"route":"chat"|"agent","title":"<3-5 word imperative title in Title Case, no trailing punctuation>","ack":"<one short spoken acknowledgement, max 7 words, friendly tone>"}
+        {"route":"chat"|"agent","title":"<3-5 word imperative title in Title Case, no trailing punctuation>","ack":"<one short spoken acknowledgement, max 7 words, friendly tone>","task_domain":"coding"|"repo_ops"|"browser"|"messaging"|"files"|"research"|"system"|null}
+
+        For agent routes, set task_domain to the best fit for the task. Use null when unsure.
 
         Use "agent" ONLY when the request requires the assistant to take real actions on the user's computer/browser/apps that will plausibly take more than ~10 seconds — building/coding something, sending/posting a message, editing or creating files, multi-step browser navigation, generating a long document.
         Use "chat" for everything else: questions, lookups (even if the user uses words like "search"/"find"/"look up"), definitions, single facts, explanations, short summaries, opinions, conversation. When in doubt, choose "chat".
@@ -334,11 +344,13 @@ final class AgentPillsManager: ObservableObject {
             let route = Route(rawValue: routeStr) ?? .chat
             let title = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let ack = (payload["ack"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            log("AgentPill: router decided route=\(route.rawValue) title=\"\(title ?? "")\"")
+            let taskDomain = AgentTaskDomain.parse(payload["task_domain"] as? String)
+            log("AgentPill: router decided route=\(route.rawValue) title=\"\(title ?? "")\" domain=\(taskDomain?.rawValue ?? "none")")
             return RouterDecision(
                 route: route,
                 title: (title?.isEmpty == false) ? String(title!.prefix(40)) : nil,
-                ack: (ack?.isEmpty == false) ? String(ack!.prefix(120)) : nil
+                ack: (ack?.isEmpty == false) ? String(ack!.prefix(120)) : nil,
+                taskDomain: taskDomain
             )
         } catch {
             log("AgentPill: router threw — \(error.localizedDescription), defaulting to chat")
@@ -575,7 +587,8 @@ final class AgentPillsManager: ObservableObject {
         fromVoice: Bool = false,
         preFetchedTitle: String? = nil,
         preFetchedAck: String? = nil,
-        bridgeHarnessOverride: AgentHarnessMode? = nil
+        bridgeHarnessOverride: AgentHarnessMode? = nil,
+        fallbackChain: [AgentHarnessMode] = []
     ) -> AgentPill {
         let count = AgentPillsManager.parseAgentCount(from: query)
         if count <= 1 {
@@ -585,7 +598,8 @@ final class AgentPillsManager: ObservableObject {
                 fromVoice: fromVoice,
                 preFetchedTitle: preFetchedTitle,
                 preFetchedAck: preFetchedAck,
-                bridgeHarnessOverride: bridgeHarnessOverride
+                bridgeHarnessOverride: bridgeHarnessOverride,
+                fallbackChain: fallbackChain
             )
         }
         var first: AgentPill?
@@ -602,11 +616,18 @@ final class AgentPillsManager: ObservableObject {
                 fromVoice: fromVoice && first == nil,
                 preFetchedTitle: first == nil ? preFetchedTitle : nil,
                 preFetchedAck: first == nil ? preFetchedAck : nil,
-                bridgeHarnessOverride: bridgeHarnessOverride
+                bridgeHarnessOverride: bridgeHarnessOverride,
+                fallbackChain: fallbackChain
             )
             if first == nil { first = pill }
         }
-        return first ?? spawn(query: query, model: model, fromVoice: fromVoice, bridgeHarnessOverride: bridgeHarnessOverride)
+        return first ?? spawn(
+            query: query,
+            model: model,
+            fromVoice: fromVoice,
+            bridgeHarnessOverride: bridgeHarnessOverride,
+            fallbackChain: fallbackChain
+        )
     }
 
     @discardableResult
@@ -662,9 +683,15 @@ final class AgentPillsManager: ObservableObject {
         preFetchedTitle: String? = nil,
         preFetchedAck: String? = nil,
         systemPromptSuffix: String? = nil,
-        bridgeHarnessOverride: AgentHarnessMode? = nil
+        bridgeHarnessOverride: AgentHarnessMode? = nil,
+        fallbackChain: [AgentHarnessMode] = []
     ) -> AgentPill {
-        let pill = AgentPill(query: query, model: model, bridgeHarnessOverride: bridgeHarnessOverride)
+        let pill = AgentPill(
+            query: query,
+            model: model,
+            bridgeHarnessOverride: bridgeHarnessOverride,
+            fallbackChain: fallbackChain
+        )
         if let preFetchedTitle, !preFetchedTitle.isEmpty {
             pill.title = preFetchedTitle
         }

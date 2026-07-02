@@ -1010,21 +1010,34 @@ final class RealtimeHubController: NSObject, RealtimeHubSessionDelegate, AVSpeec
     case .spawnAgent:
       let brief = arg("brief")
       let title = (arguments["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let taskDomain = AgentTaskDomain.parse(arguments["task_domain"] as? String)
       let providerName = LocalAgentProviderNormalization.normalizeProviderToken(
         ((arguments["provider"] as? String) ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
       )
+      let autoSelect = providerName.isEmpty || providerName == "auto"
       let directedProvider: AgentPillsManager.DirectedProvider?
-      switch providerName {
-      case "openclaw": directedProvider = .openclaw
-      case "hermes": directedProvider = .hermes
-      case "codex": directedProvider = .codex
-      case "": directedProvider = nil
-      default:
-        session?.sendToolResult(
-          callId: callId, name: name,
-          output: "Unsupported agent provider '\(providerName)'. Use 'hermes', 'openclaw', or 'codex'.")
-        return
+      let bridgeHarnessOverride: AgentHarnessMode?
+      let fallbackChain: [AgentHarnessMode]
+      if autoSelect {
+        let picked = AgentSelector.select(taskDomain: taskDomain, briefLength: brief.count)
+        bridgeHarnessOverride = picked.primaryHarness
+        fallbackChain = picked.fallbackChain
+        directedProvider = AgentSelector.directedProvider(for: picked.primaryHarness)
+        log("RealtimeHub[\(providerTag)]: tool spawn_agent auto domain=\(taskDomain?.rawValue ?? "none") chain=\(Self.selectionChainLabel(picked))")
+      } else {
+        fallbackChain = []
+        switch providerName {
+        case "openclaw": directedProvider = .openclaw
+        case "hermes": directedProvider = .hermes
+        case "codex": directedProvider = .codex
+        default:
+          session?.sendToolResult(
+            callId: callId, name: name,
+            output: "Unsupported agent provider '\(providerName)'. Use 'auto', 'hermes', 'openclaw', or 'codex'.")
+          return
+        }
+        bridgeHarnessOverride = directedProvider?.harnessMode
       }
       if let directedProvider {
         let availability = LocalAgentProviderDetector.availability(for: directedProvider)
@@ -1045,15 +1058,12 @@ final class RealtimeHubController: NSObject, RealtimeHubSessionDelegate, AVSpeec
       }
       let model = ShortcutSettings.shared.selectedModel.isEmpty
         ? ModelQoS.Claude.defaultSelection : ShortcutSettings.shared.selectedModel
-      // Non-blocking: spawn renders its own pill ("text bubble") and runs on its
-      // own ChatProvider/AgentBridge. We don't await it on the voice loop.
-      // fromVoice:false — the hub model speaks its own natural acknowledgment, so the pill
-      // must NOT also speak its canned randomAck ("on it") or we double up.
       let pill = AgentPillsManager.shared.spawnFromUserQuery(
         brief, model: model, fromVoice: false,
-        preFetchedTitle: (title?.isEmpty == false) ? title : directedProvider?.displayName,
-        bridgeHarnessOverride: directedProvider?.harnessMode)
-      log("RealtimeHub[\(providerTag)]: tool spawn_agent → AgentBridge pill=\"\(pill.title)\" model=\(model) provider=\(directedProvider?.rawValue ?? "default") titled=\(title?.isEmpty == false)")
+        preFetchedTitle: (title?.isEmpty == false) ? title : AgentSelector.displayName(for: bridgeHarnessOverride, directedProvider: directedProvider),
+        bridgeHarnessOverride: bridgeHarnessOverride,
+        fallbackChain: fallbackChain)
+      log("RealtimeHub[\(providerTag)]: tool spawn_agent → AgentBridge pill=\"\(pill.title)\" model=\(model) provider=\(directedProvider?.rawValue ?? bridgeHarnessOverride?.rawValue ?? "default") titled=\(title?.isEmpty == false)")
       if !audioReceivedThisTurn {
         let existingAck = assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
         let ack = existingAck.isEmpty ? "Starting a background agent." : existingAck
@@ -1340,5 +1350,9 @@ final class RealtimeHubController: NSObject, RealtimeHubSessionDelegate, AVSpeec
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
     return true
+  }
+
+  private static func selectionChainLabel(_ selection: AgentSelection) -> String {
+    ([selection.primaryHarness.rawValue] + selection.fallbackChain.map(\.rawValue)).joined(separator: ">")
   }
 }
